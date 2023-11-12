@@ -31,7 +31,7 @@ def sweep_servo(pin):
         for angle in range(0, 181, 10):  # Move in 10-degree steps
             duty_cycle = angle / 18 + 2
             pwm.ChangeDutyCycle(duty_cycle)
-            time.sleep(0.2)  # Adjust this value for the desired speed
+            time.sleep(0.5)  # Adjust this value for the desired speed
 
     finally:
         pwm.stop()
@@ -42,3 +42,6 @@ center_servo(servo_pin)
 
 # Test the sweeping function
 sweep_servo(servo_pin)
+
+#Center again to end
+center_servo(servo_pin)
