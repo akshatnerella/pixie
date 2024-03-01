@@ -1,5 +1,7 @@
-from subprocess import call
+import subprocess
 import time
-call('cvlc testexpressions.mp4 --fullscreen --no-video-title-show --no-embedded-video --no-qt-fs-controller --qt-fullscreen-screennumber=1', shell=True)
+p = subprocess.Popen('cvlc testexpressions.mp4 --fullscreen --no-video-title-show --no-embedded-video --no-qt-fs-controller --qt-fullscreen-screennumber=1', shell=True)
 time.sleep(1000)
-call('cvlc testexpressions.mp4 --fullscreen --no-video-title-show --no-embedded-video --no-qt-fs-controller --qt-fullscreen-screennumber=1', shell=True)
+p.terminate()
+time.sleep(1000)
+subprocess.Popen('cvlc testexpressions.mp4 --fullscreen --no-video-title-show --no-embedded-video --no-qt-fs-controller --qt-fullscreen-screennumber=1', shell=True)
