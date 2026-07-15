@@ -62,7 +62,12 @@ void updateGlance() {
 
 void goToSleep() {
   roboEyes.setAutoblinker(OFF);
-  roboEyes.setMood(TIRED);  // droopy lids, not fully closed -- close() leaves nothing to draw at all
+  // TIRED mood draws a diagonal drooping eyelid -- reads as sad, not
+  // sleepy. Flat squinted rectangles (full width, short height) instead:
+  // DEFAULT mood (no diagonal cutout) + manually forced short height.
+  roboEyes.setMood(DEFAULT);
+  roboEyes.eyeLheightCurrent = roboEyes.eyeLheightNext = 20;
+  roboEyes.eyeRheightCurrent = roboEyes.eyeRheightNext = 20;
   state = ASLEEP;
   tft.setTextColor(YELLOW);
   tft.setTextSize(3);
