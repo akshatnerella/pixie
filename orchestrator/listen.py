@@ -8,9 +8,12 @@ follows (stopping on real silence, not a fixed timer), transcribes it, and
 forwards it to the brain (server.js's /chat, which also handles the
 Arduino serial write). Speaks the reply back with Pocket TTS.
 
-Wake word is "hey_jarvis" (an openWakeWord pretrained model) as a stand-in
-for "hey pixie" -- no pretrained "hey pixie" model exists. Swap WAKE_WORD
-once a real custom model is trained or generated via Picovoice.
+Wake word is a custom-trained "pixie" openWakeWord model (see
+wakeword_training/train.py) -- Picovoice's free tier was discontinued, so
+this was trained locally instead: synthetic TTS positive examples +
+davidscripka's pre-computed negative feature set. Hobby-grade, not
+commercial-grade -- trained entirely on synthetic voices, never tested
+against Akshat's actual voice through a real mic until now.
 """
 
 import random
@@ -23,7 +26,8 @@ from faster_whisper import WhisperModel
 from openwakeword.model import Model
 from pocket_tts import TTSModel
 
-WAKE_WORD = "hey_jarvis"
+WAKE_WORD = "pixie"
+WAKE_WORD_MODEL_PATH = "pixie.onnx"
 DETECTION_THRESHOLD = 0.5
 SAMPLE_RATE = 16000
 WAKE_CHUNK = 1280  # openWakeWord expects 80ms chunks at 16kHz
@@ -79,7 +83,7 @@ def speak(tts_model, voice_state, text):
 
 def main():
     print("Loading models...", flush=True)
-    oww_model = Model(wakeword_models=[WAKE_WORD])
+    oww_model = Model(wakeword_models=[WAKE_WORD_MODEL_PATH])
     stt_model = WhisperModel("base.en", device="cpu", compute_type="int8")
     tts_model = TTSModel.load_model()
     voice_state = tts_model.get_state_for_audio_prompt(TTS_VOICE)

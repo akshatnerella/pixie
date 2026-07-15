@@ -1,4 +1,6 @@
 node_modules/
 server/session.json
 orchestrator/venv/
+orchestrator/wakeword_training/venv/
+orchestrator/wakeword_training/negative_features.npy
 __pycache__/
