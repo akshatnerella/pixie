@@ -11,6 +11,12 @@ TFTRoboEyes<MCUFRIEND_kbv> roboEyes(tft);
 const unsigned long GLANCE_AFTER_MS = 2UL * 60 * 1000;
 const unsigned long SLEEP_AFTER_MS = 5UL * 60 * 1000;
 const unsigned long GLANCE_HOLD_MS = 900;
+// ponytail: fixed-duration stand-in for "how long Pixie is speaking" --
+// once TTS exists, drive this off actual playback finishing instead.
+const unsigned long EMOTION_DISPLAY_MS = 5000;
+
+bool emotionActive = false;
+unsigned long emotionSetAt = 0;
 
 enum State { AWAKE, GLANCING, ASLEEP };
 State state = AWAKE;
@@ -76,20 +82,27 @@ void applyEmotion(const String &name) {
   roboEyes.setCuriosity(false);
   if (name == "happy") {
     roboEyes.setMood(HAPPY);
+    emotionActive = true;
   } else if (name == "excited") {
     roboEyes.setMood(HAPPY);
     roboEyes.anim_laugh();
+    emotionActive = true;
   } else if (name == "sleepy") {
     roboEyes.setMood(TIRED);
+    emotionActive = true;
   } else if (name == "concerned") {
     roboEyes.setMood(ANGRY);
+    emotionActive = true;
   } else if (name == "curious") {
     roboEyes.setMood(DEFAULT);
     roboEyes.setCuriosity(true);
     roboEyes.anim_curious();
+    emotionActive = true;
   } else {
     roboEyes.setMood(DEFAULT);
+    emotionActive = false;
   }
+  emotionSetAt = millis();
 }
 
 void setup() {
@@ -146,6 +159,10 @@ void loop() {
       goToSleep();
     } else if (idleMs >= GLANCE_AFTER_MS && !glancedThisIdle) {
       startGlance();
+    } else if (emotionActive && millis() - emotionSetAt >= EMOTION_DISPLAY_MS) {
+      roboEyes.setMood(DEFAULT);
+      roboEyes.setCuriosity(false);
+      emotionActive = false;
     }
   }
 
