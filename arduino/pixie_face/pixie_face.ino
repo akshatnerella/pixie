@@ -68,10 +68,13 @@ void goToSleep() {
 }
 
 void wakeUp() {
+  bool wasRepositioning = (state != AWAKE);  // coming from ASLEEP or GLANCING
   roboEyes.open();
   roboEyes.setAutoblinker(ON, 4, 2);
-  roboEyes.setPosition(DEFAULT);
-  tft.fillScreen(BG);  // avoid smart-erase artifacts on position jumps
+  if (wasRepositioning) {
+    roboEyes.setPosition(DEFAULT);
+    tft.fillScreen(BG);  // only needed when position actually changes
+  }
   state = AWAKE;
   glancedThisIdle = false;
   lastActivity = millis();

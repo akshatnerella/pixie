@@ -1,10 +1,10 @@
 """
-Wake word + STT piece of the Pixie orchestrator (see ../ARCHITECTURE.md).
+Wake word + STT + TTS piece of the Pixie orchestrator (see
+../ARCHITECTURE.md).
 
 Listens continuously for a wake word, records the utterance that follows,
 transcribes it, and forwards it to the brain (server.js's /chat, which also
-handles the Arduino serial write). TTS playback of the reply is the next
-piece, not built yet -- this just prints what comes back.
+handles the Arduino serial write). Speaks the reply back with Pocket TTS.
 
 Wake word is "hey_jarvis" (an openWakeWord pretrained model) as a stand-in
 for "hey pixie" -- no pretrained "hey pixie" model exists. Swap WAKE_WORD
@@ -16,6 +16,7 @@ import requests
 import sounddevice as sd
 from faster_whisper import WhisperModel
 from openwakeword.model import Model
+from pocket_tts import TTSModel
 
 WAKE_WORD = "hey_jarvis"
 DETECTION_THRESHOLD = 0.5
@@ -23,6 +24,7 @@ SAMPLE_RATE = 16000
 CHUNK = 1280  # openWakeWord expects 80ms chunks at 16kHz
 UTTERANCE_SECONDS = 4  # fixed-length capture after wake word; no VAD yet
 CHAT_URL = "http://localhost:4141/chat"
+TTS_VOICE = "alba"
 
 
 def record_utterance(stream, seconds):
@@ -47,10 +49,18 @@ def ask_pixie(text):
         return {"error": str(e)}
 
 
+def speak(tts_model, voice_state, text):
+    audio = tts_model.generate_audio(voice_state, text)
+    sd.play(audio.numpy(), samplerate=tts_model.sample_rate)
+    sd.wait()
+
+
 def main():
     print("Loading models...", flush=True)
     oww_model = Model(wakeword_models=[WAKE_WORD])
     stt_model = WhisperModel("base.en", device="cpu", compute_type="int8")
+    tts_model = TTSModel.load_model()
+    voice_state = tts_model.get_state_for_audio_prompt(TTS_VOICE)
 
     print(f'Listening for wake word "{WAKE_WORD}"...', flush=True)
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=CHUNK) as stream:
@@ -66,6 +76,8 @@ def main():
                 if text:
                     result = ask_pixie(text)
                     print(f"Pixie: {result}", flush=True)
+                    if "reply" in result:
+                        speak(tts_model, voice_state, result["reply"])
                 oww_model.reset()
                 print(f'Listening for wake word "{WAKE_WORD}"...', flush=True)
 
