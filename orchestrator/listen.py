@@ -32,7 +32,7 @@ VAD_FRAME_SAMPLES = int(SAMPLE_RATE * VAD_FRAME_MS / 1000)
 SILENCE_TIMEOUT_MS = 800  # stop recording after this much trailing silence
 MAX_UTTERANCE_MS = 10000  # safety cap so a stuck mic can't hang forever
 CHAT_URL = "http://localhost:4141/chat"
-TTS_VOICE = "alba"  # TODO: swap once Akshat picks from voice_sample_*.wav
+TTS_VOICE = "voice_refs/rachel.flac"  # cloned from a LibriVox narrator clip
 FILLERS = ["Yeah?", "What's up?", "What up boss?", "Mmhm?", "I'm listening."]
 
 
