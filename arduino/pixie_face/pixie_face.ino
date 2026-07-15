@@ -31,8 +31,8 @@ bool glanceHolding = false;
 
 const uint8_t DIRS[] = { N, NE, E, SE, S, SW, W, NW };
 
-void startGlance() {
-  glanceTotal = 2 + random(0, 2);  // 2 or 3 glances
+void startGlance(uint8_t count = 0) {
+  glanceTotal = count > 0 ? count : 2 + random(0, 2);  // 2 or 3 glances if not specified
   for (uint8_t i = 0; i < glanceTotal; i++) {
     glancePositions[i] = DIRS[random(0, 8)];
   }
@@ -62,9 +62,12 @@ void updateGlance() {
 
 void goToSleep() {
   roboEyes.setAutoblinker(OFF);
-  roboEyes.setMood(TIRED);
-  roboEyes.close();
+  roboEyes.setMood(TIRED);  // droopy lids, not fully closed -- close() leaves nothing to draw at all
   state = ASLEEP;
+  tft.setTextColor(YELLOW);
+  tft.setTextSize(3);
+  tft.setCursor(240, 25);  // corner, well outside the eyes' bounding box
+  tft.print("Zzz");
 }
 
 void wakeUp() {
@@ -97,9 +100,11 @@ void applyEmotion(const String &name) {
     roboEyes.setMood(ANGRY);
     emotionActive = true;
   } else if (name == "curious") {
+    // Curiosity only has a visible effect (bigger outer eye) when looking
+    // to a side -- centered, setCuriosity(true) does nothing visible.
     roboEyes.setMood(DEFAULT);
     roboEyes.setCuriosity(true);
-    roboEyes.anim_curious();
+    startGlance(1);
     emotionActive = true;
   } else {
     roboEyes.setMood(DEFAULT);
