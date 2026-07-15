@@ -86,6 +86,15 @@ void wakeUp() {
 void applyEmotion(const String &name) {
   wakeUp();
   roboEyes.setCuriosity(false);
+
+  // Jumping straight between two moods' eyelid shapes (e.g. HAPPY's
+  // curved bottom lid to ANGRY's slanted top lid) leaves the same kind of
+  // erase artifact position jumps did -- settle through DEFAULT first so
+  // each transition is a smaller, well-handled delta.
+  roboEyes.setMood(DEFAULT);
+  unsigned long settleStart = millis();
+  while (millis() - settleStart < 300) roboEyes.update();
+
   if (name == "happy") {
     roboEyes.setMood(HAPPY);
     emotionActive = true;
