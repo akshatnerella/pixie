@@ -2,10 +2,23 @@ const http = require("http");
 const { execFile } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { SerialPort } = require("serialport");
 
 const PORT = 4141;
+const ARDUINO_PORT = "COM5";
 const BRAIN_DIR = path.join(__dirname, "..", "brain");
 const SESSION_FILE = path.join(__dirname, "session.json");
+
+const arduino = new SerialPort({ path: ARDUINO_PORT, baudRate: 9600 }, (err) => {
+  if (err) console.error(`Arduino not connected on ${ARDUINO_PORT}: ${err.message} (chat will still work, face won't update)`);
+});
+
+function sendEmotionToArduino(emotion) {
+  if (!arduino.isOpen) return;
+  arduino.write(emotion + "\n", (err) => {
+    if (err) console.error("Failed to write to Arduino:", err.message);
+  });
+}
 const SYSTEM_PROMPT = "You are Pixie.";
 const EMOTION_SCHEMA = JSON.stringify({
   type: "object",
@@ -85,6 +98,7 @@ http
           res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: err }));
           return;
         }
+        sendEmotionToArduino(result.emotion);
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
       });
     });
