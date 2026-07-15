@@ -79,6 +79,11 @@ function askPixie(message, callback) {
 
 http
   .createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/demo") {
+      sendEmotionToArduino("demo");
+      res.writeHead(200).end("ok");
+      return;
+    }
     if (req.method !== "POST" || req.url !== "/chat") {
       res.writeHead(404).end();
       return;

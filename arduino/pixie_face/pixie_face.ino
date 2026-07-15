@@ -149,11 +149,28 @@ void setup() {
   lastActivity = millis();
 }
 
+void runDemo() {
+  const char *states[] = { "neutral", "happy", "excited", "sleepy", "concerned", "curious" };
+  for (uint8_t i = 0; i < 6; i++) {
+    applyEmotion(String(states[i]));
+    unsigned long start = millis();
+    while (millis() - start < 5000) {
+      if (state == GLANCING) updateGlance();
+      roboEyes.update();
+    }
+  }
+  goToSleep();
+  unsigned long start = millis();
+  while (millis() - start < 5000) roboEyes.update();
+  applyEmotion("neutral");
+}
+
 void loop() {
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     line.trim();
-    if (line.length() > 0) applyEmotion(line);
+    if (line == "demo") runDemo();
+    else if (line.length() > 0) applyEmotion(line);
   }
 
   unsigned long idleMs = millis() - lastActivity;
