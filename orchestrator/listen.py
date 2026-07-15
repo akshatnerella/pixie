@@ -2,18 +2,23 @@
 Wake word + STT + TTS piece of the Pixie orchestrator (see
 ../ARCHITECTURE.md).
 
-Listens continuously for a wake word, records the utterance that follows,
-transcribes it, and forwards it to the brain (server.js's /chat, which also
-handles the Arduino serial write). Speaks the reply back with Pocket TTS.
+Listens continuously for a wake word, plays an instant filler ("yeah?",
+"what's up?"...) so it feels responsive, records the utterance that
+follows (stopping on real silence, not a fixed timer), transcribes it, and
+forwards it to the brain (server.js's /chat, which also handles the
+Arduino serial write). Speaks the reply back with Pocket TTS.
 
 Wake word is "hey_jarvis" (an openWakeWord pretrained model) as a stand-in
 for "hey pixie" -- no pretrained "hey pixie" model exists. Swap WAKE_WORD
 once a real custom model is trained or generated via Picovoice.
 """
 
+import random
+
 import numpy as np
 import requests
 import sounddevice as sd
+import webrtcvad
 from faster_whisper import WhisperModel
 from openwakeword.model import Model
 from pocket_tts import TTSModel
@@ -21,18 +26,35 @@ from pocket_tts import TTSModel
 WAKE_WORD = "hey_jarvis"
 DETECTION_THRESHOLD = 0.5
 SAMPLE_RATE = 16000
-CHUNK = 1280  # openWakeWord expects 80ms chunks at 16kHz
-UTTERANCE_SECONDS = 4  # fixed-length capture after wake word; no VAD yet
+WAKE_CHUNK = 1280  # openWakeWord expects 80ms chunks at 16kHz
+VAD_FRAME_MS = 30  # webrtcvad only accepts 10/20/30ms frames
+VAD_FRAME_SAMPLES = int(SAMPLE_RATE * VAD_FRAME_MS / 1000)
+SILENCE_TIMEOUT_MS = 800  # stop recording after this much trailing silence
+MAX_UTTERANCE_MS = 10000  # safety cap so a stuck mic can't hang forever
 CHAT_URL = "http://localhost:4141/chat"
-TTS_VOICE = "alba"
+TTS_VOICE = "alba"  # TODO: swap once Akshat picks from voice_sample_*.wav
+FILLERS = ["Yeah?", "What's up?", "What up boss?", "Mmhm?", "I'm listening."]
 
 
-def record_utterance(stream, seconds):
+def record_until_silence(stream, vad):
     frames = []
-    for _ in range(int(seconds * SAMPLE_RATE / CHUNK)):
-        chunk, _ = stream.read(CHUNK)
-        frames.append(chunk.copy())
-    return np.concatenate(frames).flatten()
+    silence_ms = 0
+    speech_started = False
+    elapsed_ms = 0
+    while elapsed_ms < MAX_UTTERANCE_MS:
+        frame, _ = stream.read(VAD_FRAME_SAMPLES)
+        frame = frame.flatten()
+        frames.append(frame.copy())
+        is_speech = vad.is_speech(frame.tobytes(), SAMPLE_RATE)
+        elapsed_ms += VAD_FRAME_MS
+        if is_speech:
+            speech_started = True
+            silence_ms = 0
+        elif speech_started:
+            silence_ms += VAD_FRAME_MS
+            if silence_ms >= SILENCE_TIMEOUT_MS:
+                break
+    return np.concatenate(frames)
 
 
 def transcribe(stt_model, audio_int16):
@@ -61,16 +83,24 @@ def main():
     stt_model = WhisperModel("base.en", device="cpu", compute_type="int8")
     tts_model = TTSModel.load_model()
     voice_state = tts_model.get_state_for_audio_prompt(TTS_VOICE)
+    vad = webrtcvad.Vad(2)  # aggressiveness 0-3; 2 is a reasonable default
+
+    print("Pre-generating filler responses...", flush=True)
+    filler_audio = [tts_model.generate_audio(voice_state, f).numpy() for f in FILLERS]
 
     print(f'Listening for wake word "{WAKE_WORD}"...', flush=True)
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=CHUNK) as stream:
+    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=WAKE_CHUNK) as stream:
         while True:
-            chunk, _ = stream.read(CHUNK)
+            chunk, _ = stream.read(WAKE_CHUNK)
             prediction = oww_model.predict(chunk.flatten())
             if prediction[WAKE_WORD] > DETECTION_THRESHOLD:
                 oww_model.reset()
-                print("Wake word detected -- listening...", flush=True)
-                utterance = record_utterance(stream, UTTERANCE_SECONDS)
+                print("Wake word detected", flush=True)
+
+                sd.play(random.choice(filler_audio), samplerate=tts_model.sample_rate)
+                sd.wait()
+
+                utterance = record_until_silence(stream, vad)
                 text = transcribe(stt_model, utterance)
                 print(f"Heard: {text!r}", flush=True)
                 if text:
