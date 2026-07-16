@@ -9,16 +9,40 @@ const ARDUINO_PORT = "COM5";
 const BRAIN_DIR = path.join(__dirname, "..", "brain");
 const SESSION_FILE = path.join(__dirname, "session.json");
 
+function log(msg) {
+  console.log(`[${new Date().toISOString().slice(11, 23)}] ${msg}`);
+}
+
 const arduino = new SerialPort({ path: ARDUINO_PORT, baudRate: 9600 }, (err) => {
   if (err) console.error(`Arduino not connected on ${ARDUINO_PORT}: ${err.message} (chat will still work, face won't update)`);
 });
+// Without this listener, serialport's default behavior on any port-level
+// error (e.g. a transient WriteFileEx failure) is to throw and crash the
+// whole process -- log it instead so the server survives a serial hiccup.
+arduino.on("error", (err) => log(`Arduino serial error: ${err.message}`));
 
 function sendEmotionToArduino(emotion) {
   if (!arduino.isOpen) return;
+  const t0 = Date.now();
   arduino.write(emotion + "\n", (err) => {
     if (err) console.error("Failed to write to Arduino:", err.message);
+    else log(`Arduino write "${emotion}" took ${Date.now() - t0}ms`);
   });
 }
+
+function formatTime() {
+  const now = new Date();
+  let hours = now.getHours() % 12;
+  if (hours === 0) hours = 12;
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+// Silent periodic sync so the Arduino has a roughly-fresh time to show in
+// the corner while asleep, without needing an RTC of its own.
+setInterval(() => sendEmotionToArduino(`settime:${formatTime()}`), 60 * 1000);
+sendEmotionToArduino(`settime:${formatTime()}`);
+
 const SYSTEM_PROMPT = "You are Pixie.";
 const EMOTION_SCHEMA = JSON.stringify({
   type: "object",
@@ -45,6 +69,7 @@ function saveSessionId(sessionId) {
 }
 
 function askPixie(message, callback) {
+  const t0 = Date.now();
   const sessionId = loadSessionId();
   const args = [
     "-p",
@@ -60,7 +85,9 @@ function askPixie(message, callback) {
   ];
   if (sessionId) args.push("-r", sessionId);
 
+  log(`askPixie() spawning claude CLI for: ${message}`);
   execFile("claude", args, { cwd: BRAIN_DIR, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    log(`askPixie() claude CLI took ${Date.now() - t0}ms`);
     if (err) return callback(err.message + "\n" + stderr);
     let parsed;
     try {
@@ -79,9 +106,31 @@ function askPixie(message, callback) {
 
 http
   .createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/demo") {
-      sendEmotionToArduino("demo");
+    const reqT0 = Date.now();
+    log(`${req.method} ${req.url} received`);
+    if (req.method === "POST" && req.url === "/wake") {
+      // Fired the instant the wake word fires, before STT/brain even start --
+      // small red dot overlay, doesn't disturb whatever's already on screen.
+      sendEmotionToArduino("listening");
       res.writeHead(200).end("ok");
+      log(`/wake total ${Date.now() - reqT0}ms`);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/widget") {
+      let widgetBody = "";
+      req.on("data", (chunk) => (widgetBody += chunk));
+      req.on("end", () => {
+        let command;
+        try {
+          command = JSON.parse(widgetBody).command;
+        } catch {
+          res.writeHead(400).end("bad json");
+          return;
+        }
+        sendEmotionToArduino(command);
+        res.writeHead(200).end("ok");
+        log(`/widget total ${Date.now() - reqT0}ms`);
+      });
       return;
     }
     if (req.method !== "POST" || req.url !== "/chat") {
@@ -105,7 +154,8 @@ http
         }
         sendEmotionToArduino(result.emotion);
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+        log(`/chat total ${Date.now() - reqT0}ms`);
       });
     });
   })
-  .listen(PORT, () => console.log(`Pixie server listening on http://localhost:${PORT}`));
+  .listen(PORT, () => log(`Pixie server listening on http://localhost:${PORT}`));
