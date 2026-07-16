@@ -7,6 +7,8 @@ TFTRoboEyes<MCUFRIEND_kbv> roboEyes(tft);
 
 #define BG 0x0000
 #define YELLOW 0xFFE0
+#define RED 0xF800
+#define DIMYELLOW 0x8400
 
 const unsigned long GLANCE_AFTER_MS = 2UL * 60 * 1000;
 const unsigned long SLEEP_AFTER_MS = 5UL * 60 * 1000;
@@ -18,10 +20,27 @@ const unsigned long EMOTION_DISPLAY_MS = 5000;
 bool emotionActive = false;
 unsigned long emotionSetAt = 0;
 
-enum State { AWAKE, GLANCING, ASLEEP };
+enum State { AWAKE, GLANCING, ASLEEP, CLOCK, THINKING };
 State state = AWAKE;
 unsigned long lastActivity = 0;
 bool glancedThisIdle = false;
+
+const int16_t DOT_SIZE = 14;
+uint8_t thinkPhase = 0;
+unsigned long thinkLastStep = 0;
+
+const unsigned long CLOCK_DISPLAY_MS = 6000;
+const unsigned long COLON_BLINK_MS = 500;
+String clockTimeStr = "";
+unsigned long clockEnteredAt = 0;
+unsigned long lastColonToggle = 0;
+bool colonVisible = true;
+int16_t clockX = 0;
+const int16_t CLOCK_Y = 88;
+const int16_t CLOCK_CHAR_W = 6 * 8;  // 6px glyph cell * text size 8
+const int16_t CLOCK_CHAR_H = 8 * 8;
+
+String sleepClockStr = "";  // last known time, shown small while asleep
 
 uint8_t glanceStep = 0;
 uint8_t glanceTotal = 0;
@@ -60,6 +79,20 @@ void updateGlance() {
   }
 }
 
+void drawSleepClock() {
+  if (sleepClockStr.length() == 0) return;
+  // Mirrors the Zzz's corner on the opposite side. Small text (size 3),
+  // fixed-width cell erase so it can be redrawn without disturbing Zzz or
+  // the sleepy eyes.
+  const int16_t w = 6 * 3 * 5;  // room for up to "12:15"
+  const int16_t h = 8 * 3;
+  tft.fillRect(10, 25, w, h, BG);
+  tft.setTextColor(YELLOW);
+  tft.setTextSize(3);
+  tft.setCursor(10, 25);
+  tft.print(sleepClockStr);
+}
+
 void goToSleep() {
   roboEyes.setAutoblinker(OFF);
   // TIRED mood draws a diagonal drooping eyelid -- reads as sad, not
@@ -73,9 +106,11 @@ void goToSleep() {
   tft.setTextSize(3);
   tft.setCursor(240, 25);  // corner, well outside the eyes' bounding box
   tft.print("Zzz");
+  drawSleepClock();
 }
 
 void wakeUp() {
+  bool wasAsleep = (state == ASLEEP);
   bool wasRepositioning = (state != AWAKE);  // coming from ASLEEP or GLANCING
   roboEyes.open();
   roboEyes.setAutoblinker(ON, 4, 2);
@@ -83,9 +118,116 @@ void wakeUp() {
     roboEyes.setPosition(DEFAULT);
     tft.fillScreen(BG);  // only needed when position actually changes
   }
+
+  if (wasAsleep) {
+    roboEyes.setMood(DEFAULT);
+    // Smooth continuous grow from the sleepy squint up to wide-eyed, then
+    // back down to normal -- a single fluid motion, no separate blink step.
+    int wideHeight = roboEyes.eyeLheightDefault * 1.2;
+    int normalHeight = roboEyes.eyeLheightDefault;
+    for (int h = 20; h <= wideHeight; h += 4) {
+      roboEyes.eyeLheightCurrent = roboEyes.eyeLheightNext = h;
+      roboEyes.eyeRheightCurrent = roboEyes.eyeRheightNext = h;
+      roboEyes.update();
+      delay(15);
+    }
+    for (int h = wideHeight; h >= normalHeight; h -= 4) {
+      roboEyes.eyeLheightCurrent = roboEyes.eyeLheightNext = h;
+      roboEyes.eyeRheightCurrent = roboEyes.eyeRheightNext = h;
+      roboEyes.update();
+      delay(15);
+    }
+    roboEyes.eyeLheightCurrent = roboEyes.eyeLheightNext = normalHeight;
+    roboEyes.eyeRheightCurrent = roboEyes.eyeRheightNext = normalHeight;
+  }
+
   state = AWAKE;
   glancedThisIdle = false;
   lastActivity = millis();
+}
+
+void drawClockFull() {
+  tft.fillScreen(BG);
+  tft.setTextColor(YELLOW);
+  tft.setTextSize(8);
+  int16_t textWidth = clockTimeStr.length() * CLOCK_CHAR_W;
+  clockX = max(0, (320 - textWidth) / 2);
+  tft.setCursor(clockX, CLOCK_Y);
+  tft.print(clockTimeStr);
+}
+
+void toggleColon() {
+  // Only erase/redraw the colon's own glyph cell -- redrawing the whole
+  // screen every 500ms caused a visible full-screen flash.
+  int colonIndex = clockTimeStr.indexOf(':');
+  if (colonIndex < 0) return;
+  int16_t charX = clockX + colonIndex * CLOCK_CHAR_W;
+  tft.fillRect(charX, CLOCK_Y, CLOCK_CHAR_W, CLOCK_CHAR_H, BG);
+  if (colonVisible) {
+    tft.setTextColor(YELLOW);
+    tft.setTextSize(8);
+    tft.setCursor(charX, CLOCK_Y);
+    tft.print(':');
+  }
+}
+
+void showClock(const String &timeStr) {
+  clockTimeStr = timeStr;
+  roboEyes.setMood(DEFAULT);
+  roboEyes.setCuriosity(false);
+
+  // Instant cut, no morph animation -- drawClockFull() clears the eyes
+  // and draws the full time text in one shot.
+  clockEnteredAt = millis();
+  lastColonToggle = millis();
+  colonVisible = true;
+  drawClockFull();
+  state = CLOCK;
+}
+
+void updateClock() {
+  if (millis() - lastColonToggle >= COLON_BLINK_MS) {
+    colonVisible = !colonVisible;
+    lastColonToggle = millis();
+    toggleColon();
+  }
+  if (millis() - clockEnteredAt >= CLOCK_DISPLAY_MS) {
+    // Instant cut back to normal eyes -- clear the clock text, sync roboEyes'
+    // state to defaults, and let the next roboEyes.update() (below, once
+    // state is AWAKE again) draw the eyes fresh.
+    tft.fillScreen(BG);
+    roboEyes.open();
+    roboEyes.eyeLx = roboEyes.eyeLxNext = roboEyes.eyeLxDefault;
+    roboEyes.eyeLy = roboEyes.eyeLyNext = roboEyes.eyeLyDefault;
+    roboEyes.eyeRx = roboEyes.eyeRxNext = roboEyes.eyeRxDefault;
+    roboEyes.eyeRy = roboEyes.eyeRyNext = roboEyes.eyeRyDefault;
+    roboEyes.eyeLwidthCurrent = roboEyes.eyeLwidthNext = roboEyes.eyeLwidthDefault;
+    roboEyes.eyeLheightCurrent = roboEyes.eyeLheightNext = roboEyes.eyeLheightDefault;
+    roboEyes.eyeRwidthCurrent = roboEyes.eyeRwidthNext = roboEyes.eyeRwidthDefault;
+    roboEyes.eyeRheightCurrent = roboEyes.eyeRheightNext = roboEyes.eyeRheightDefault;
+    state = AWAKE;
+    lastActivity = millis();
+  }
+}
+
+// Small overlay dot, bottom-right, on top of whatever's already on screen --
+// fires the instant the wake word triggers, before STT/brain even start.
+void drawListeningDot() {
+  tft.fillRect(295, 214, DOT_SIZE, DOT_SIZE, RED);
+}
+
+// Three-dot loader, same bottom-right corner as the listening dot, overlaid
+// on whatever's already on screen -- rightmost dot exactly covers where the
+// listening dot was, so the handoff is a clean overdraw. One dot bright,
+// other two dim, cycling -- fakes a fade without real alpha blending.
+void updateThinking() {
+  if (millis() - thinkLastStep < 250) return;
+  thinkLastStep = millis();
+  const int16_t gap = 18, y = 214;
+  for (uint8_t i = 0; i < 3; i++) {
+    tft.fillRect(295 - (2 - i) * gap, y, DOT_SIZE, DOT_SIZE, i == thinkPhase ? YELLOW : DIMYELLOW);
+  }
+  thinkPhase = (thinkPhase + 1) % 3;
 }
 
 void applyEmotion(const String &name) {
@@ -163,33 +305,35 @@ void setup() {
   lastActivity = millis();
 }
 
-void runDemo() {
-  const char *states[] = { "neutral", "happy", "excited", "sleepy", "concerned", "curious" };
-  for (uint8_t i = 0; i < 6; i++) {
-    applyEmotion(String(states[i]));
-    unsigned long start = millis();
-    while (millis() - start < 5000) {
-      if (state == GLANCING) updateGlance();
-      roboEyes.update();
-    }
-  }
-  goToSleep();
-  unsigned long start = millis();
-  while (millis() - start < 5000) roboEyes.update();
-  applyEmotion("neutral");
-}
-
 void loop() {
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     line.trim();
-    if (line == "demo") runDemo();
+    if (line == "listening") {
+      if (state == ASLEEP) wakeUp();
+      drawListeningDot();
+      lastActivity = millis();
+    } else if (line == "thinking") {
+      state = THINKING;
+      thinkPhase = 0;
+      thinkLastStep = 0;
+    } else if (line.startsWith("settime:")) {
+      // Silent time sync (server pushes this periodically) -- only visibly
+      // redraws if we're currently asleep, otherwise just updates the
+      // stored value for next time we go to sleep.
+      sleepClockStr = line.substring(8);
+      if (state == ASLEEP) drawSleepClock();
+    } else if (line.startsWith("time:")) showClock(line.substring(5));
     else if (line.length() > 0) applyEmotion(line);
   }
 
   unsigned long idleMs = millis() - lastActivity;
 
-  if (state == ASLEEP) {
+  if (state == CLOCK) {
+    updateClock();
+  } else if (state == THINKING) {
+    updateThinking();
+  } else if (state == ASLEEP) {
     // stays asleep until a Serial command wakes it via applyEmotion()
   } else if (state == GLANCING) {
     updateGlance();
@@ -205,5 +349,5 @@ void loop() {
     }
   }
 
-  roboEyes.update();
+  if (state != CLOCK) roboEyes.update();  // don't draw eyes over the clock digits; thinking dots are just a corner overlay
 }
