@@ -1,7 +1,14 @@
 node_modules/
 server/session.json
+server/*.log
 orchestrator/venv/
+orchestrator/*.log
 orchestrator/wakeword_training/venv/
 orchestrator/wakeword_training/negative_features.npy
+orchestrator/wakeword_training/*.log
+orchestrator/wakeword_training/pixie.onnx
+orchestrator/wakeword_training/pixie_verifier.pkl
+orchestrator/wakeword_training/real_positives/
+orchestrator/wakeword_training/negative_clips/
 __pycache__/
 arduino/pixie_face/build/

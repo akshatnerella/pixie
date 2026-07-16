@@ -1,146 +1,95 @@
 # Pixie Architecture
 
-Locked in 2026-07-14. This is the target design — see "Status" on each
-component for what's actually built vs. still to do.
+What's actually built and running, as of 2026-07-15. Pixie is a state
+machine split across three processes: a Python orchestrator that owns all
+audio, a Node server that owns the brain and the Arduino serial port, and
+the Arduino itself, which is a dumb display peripheral that only ever
+receives a short command string over serial and draws something for it.
 
-## Overview
-
-Pixie is one big state machine running on the PC, driven by a wake word.
-The PC owns all audio (wake word, STT, TTS) and the brain (headless Claude
-Code). The Arduino is a dumb display peripheral — it only ever receives a
-short emotion string over serial and draws a face for it. Nothing about the
-Arduino's role changes from what's already built.
-
-## State machine
+## Processes
 
 ```
-IDLE_AWAKE ──(2 min no wake word)──> IDLE_GLANCE ──(glance sequence done)──> IDLE_AWAKE
-IDLE_AWAKE / IDLE_GLANCE ──(5 min no wake word, total)──> IDLE_ASLEEP
-
-IDLE_AWAKE / IDLE_GLANCE / IDLE_ASLEEP ──("hey pixie" detected)──> LISTENING
-LISTENING ──(STT captures utterance, end-of-speech)──> [trigger match?]
-  [matches known trigger, e.g. time/weather/stock] ──> DETERMINISTIC ──> SPEAKING
-  [no match] ──> THINKING ──(brain returns {reply, emotion})──> SPEAKING
-SPEAKING ──(TTS playback finishes)──> IDLE_AWAKE (neutral, idle timer resets)
+orchestrator/listen.py  (Python, owns the mic/speaker)
+  ├─ wake word (openWakeWord custom "pixie" model + custom verifier)
+  ├─ STT (faster-whisper base.en)
+  ├─ deterministic triggers (e.g. clock) — bypass the brain entirely
+  └─ TTS (Pocket TTS, cloned voice)
+        │  HTTP (localhost:4141)
+        ▼
+server/server.js  (Node, owns COM5 + the brain)
+  ├─ /chat    — shells out to headless `claude` CLI (session-resumed),
+  │             writes the returned emotion to the Arduino
+  ├─ /wake    — instant "listening" indicator, fired before STT/brain run
+  ├─ /widget  — raw passthrough (thinking dots, clock, clear-to-neutral)
+  └─ periodic settime: heartbeat, for the sleep-mode corner clock
+        │  Serial (9600 baud)
+        ▼
+arduino/pixie_face/pixie_face.ino  (Arduino Uno + ILI9341 TFT)
+  TFT_RoboEyes-based face, one-word commands in, pixels out
 ```
 
-- **IDLE_AWAKE** — neutral face, centered, blinking normally. Wake-word
-  engine is always listening in the background regardless of state.
-- **IDLE_GLANCE** — one-off 2-3 direction glance sequence, then back to
-  center. Already built (Arduino-side timer).
-- **IDLE_ASLEEP** — eyes closed, sleepy/tired mood. Already built
-  (Arduino-side timer). Wake word still wakes it from here.
-- **LISTENING** — wake word triggered; capturing the actual command/question
-  via STT.
-- **THINKING** — STT transcript sent to the brain; waiting on
-  `{reply, emotion}`.
-- **SPEAKING** — TTS speaks `reply` aloud through the speaker, screen shows
-  `emotion` for the duration.
-- **DETERMINISTIC** — the STT transcript matched a known trigger phrase
-  (see below); a local handler answers it directly, skipping the brain
-  call entirely. Falls through into SPEAKING same as a normal brain reply.
-- Back to **IDLE_AWAKE** (neutral) once TTS playback finishes; idle timers
-  restart from that moment.
+## Turn flow
 
-Any wake-word detection resets the idle timer and wakes the face
-immediately, regardless of which idle sub-state it was in.
+```
+listen.py: wake word detected (base model score > 0.5, verifier > 0.3)
+  → POST /wake                      → Arduino: red dot overlay (wakes from sleep if needed)
+  → record until VAD silence (with ~1s preroll, so words said during
+    the ~900ms wake-detection window aren't lost)
+  → POST /widget {command: thinking} → Arduino: 3 yellow dots, cycling
+  → transcribe (discard if < 2 words — near-threshold noise, not a command)
+  → [time trigger?]
+      yes → local clock handler → POST /widget {command: time:H:MM}
+            → Arduino: instant cut to full-screen clock (6s), colon
+              blinks, cuts back to normal eyes
+      no  → POST /chat {message}    → server spawns `claude`, gets
+            {reply, emotion} back, writes emotion to Arduino via serial
+            → Arduino: normal mood face, reverts to neutral after ~5s
+  → speak the reply (or "It's H:MM" for the clock) via TTS
+  → [nothing real heard] → POST /widget {command: neutral} — clears the
+    thinking dots, since nothing else would
+```
+
+Idle timers (2 min → one-off glance, 5 min → sleep) run entirely on the
+Arduino, driven by "did any command arrive recently" — the PC doesn't
+track idle state itself.
+
+## Wake word
+
+Custom-trained "pixie" openWakeWord model, two stages:
+
+1. **Base model** (`wakeword_training/train.py`) — small classifier over
+   openWakeWord's embeddings, trained on synthetic TTS clips (22 voices) +
+   real recordings of Akshat's voice (`record_positives.py`) as positives,
+   davidscripka's pre-computed negative feature set as negatives.
+2. **Custom verifier** (`wakeword_training/train_verifier.py`) — a
+   secondary speaker-conditioned filter (openWakeWord's own
+   `train_custom_verifier`), trained on the same real positive clips plus
+   real recordings of the actual background noise/talking near the mic
+   (`record_negative.py`). The base model alone was scoring high-confidence
+   false accepts (0.8-0.97) on background TV/talking; the verifier rejects
+   those a second time based on whether the voice actually matches.
+
+Both stages load in `listen.py`'s `Model(...)` call. Retraining either one
+is a rerun of the corresponding script — see the docstrings in
+`wakeword_training/` for exact steps.
 
 ## Deterministic trigger paths
 
-Some queries don't need the LLM at all — cheaper and faster to answer
-directly. STT transcript gets checked against known trigger phrases before
-falling through to the brain; on a match, a local handler runs instead of
-calling `claude`.
+STT transcript is checked against known triggers before ever reaching the
+brain — cheaper and much faster (a few seconds vs. an 8+ second `claude`
+CLI round trip).
 
-Known triggers so far (list will grow):
-- "what's the time" → read system clock
-- "what's the weather today" → weather API call
-- "what's the current price of tesla" (stock lookups generally) → stock
-  price API call
+Built so far:
+- "what/tell me/current ... time" → system clock, no brain call, own
+  full-screen widget on the Arduino (see turn flow above)
 
-**Each trigger gets its own animated UI element on the display** — not one
-of the 6 mood faces, a purpose-built widget (e.g. a clock face, a weather
-icon, a stock ticker). This means the Arduino side eventually needs a
-second class of screen beyond RoboEyes' expressions. Not designed yet —
-placeholder for when we get to this step.
+More can be added the same way: match in `listen.py`, add a local handler,
+give it its own Arduino-side widget if it needs a distinct visual (see
+`showClock`/`updateClock` in the `.ino` for the pattern).
 
-Open design questions for this piece specifically:
-- How triggers are matched (exact phrase list vs. fuzzy/keyword match vs.
-  a fast local intent classifier)
-- Where the trigger-matching logic lives (PC orchestrator, presumably,
-  same place STT output first lands)
-- What each widget actually looks like on a 320×240 screen, and how it
-  transitions in/out against the eyes
+## Flash budget (Arduino)
 
-## Components
-
-### Brain — PC, headless Claude Code
-**Status: built.** `server/server.js` shells out to `claude -p ... -r
-<session_id> --tools "" --system-prompt ... --json-schema {reply, emotion}`
-per turn, in `brain/CLAUDE.md`'s working directory. Session-resumed, so
-conversation memory persists across turns. Currently exposed as an HTTP
-`/chat` endpoint for testing (curl / `client/client.js`) — will likely get
-called directly by the new orchestrator instead of over HTTP once that
-exists (open question, see below).
-
-### Emotion vocabulary
-**Status: partially built, needs consolidating.** Currently lives only in
-`server.js`'s `--json-schema` enum (`happy, excited, curious, sleepy,
-concerned, neutral`). Per this design, the list should also be declared in
-`brain/CLAUDE.md` itself so the persona doc is self-contained — the two need
-to stay in sync (manually for now; could generate the schema from
-CLAUDE.md's list later if it becomes annoying).
-
-### Display — Arduino Uno + ILI9341 TFT shield
-**Status: built.** `arduino/pixie_face/pixie_face.ino`, `TFT_RoboEyes`-based
-animated eyes, yellow, 85×85, 30px gap. Listens on Serial for a one-word
-emotion command, draws the matching mood. Owns its own idle-glance
-(2 min) / sleep (5 min) timers independently, driven by "did a command
-arrive recently," not by the wake-word state machine directly — the PC
-resets the Arduino's idle clock simply by sending it any command.
-
-### Serial bridge — PC → Arduino
-**Status: built.** `server.js` opens `COM5` via the `serialport` npm
-package at startup, writes the emotion string after every brain response.
-
-### TTS — PC, local
-**Status: not built.** Pocket TTS (Kyutai Labs) — CPU-only, ~200ms
-time-to-first-chunk, `pip install`, runs as a local server (`pocket-tts
-serve`) or callable directly. Speaks `reply` through the PC's speaker /
-the user's speaker module during SPEAKING.
-
-### STT — PC, local
-**Status: not built, engine not chosen.** Captures the user's utterance
-during LISTENING, after the wake word fires. Candidates to evaluate:
-Whisper.cpp (accurate, heavier), Vosk (lighter, less accurate). Not decided
-yet — next step.
-
-### Wake word — PC, local
-**Status: not built, engine not chosen.** Listens continuously for "hey
-pixie," triggers the IDLE→LISTENING transition. Candidates: openWakeWord
-(trainable, open-source), Porcupine (polished, has a free tier with usage
-limits). Not decided yet — next step.
-
-### Orchestrator — PC, Python (decided 2026-07-14)
-**Status: not built — building now.** A background Python process, since
-Pocket TTS and openWakeWord are both Python-only (no solid Node bindings) —
-keeps the whole voice loop in one language instead of splitting it.
-
-Runs the state machine: wake-word listener always on → on "hey pixie",
-capture STT → POST transcript to the *existing* `server.js` `/chat`
-endpoint (reused as-is — brain logic and the Arduino serial write both
-stay there, not duplicated) → TTS-speak the returned `reply`.
-
-Deliberately does **not** touch the Arduino's serial port itself — `COM5`
-is already owned by `server.js`, which writes the emotion as a side effect
-of `/chat`. Two processes fighting over one serial port would just break
-things, so the Python side stays HTTP-only.
-
-## Open questions (to resolve step by step, not now)
-
-1. STT engine choice (Whisper.cpp vs Vosk vs other)
-2. Wake-word engine choice (openWakeWord vs Porcupine vs other)
-3. Orchestrator shape — does `/chat` HTTP stay for debugging, or does
-   everything move inside one always-on process?
-4. Where exactly the mic/speaker hardware plugs in (PC's own audio vs. the
-   separate mic module + speaker Akshat already owns)
+Uno has 32256 bytes of program storage; currently ~91% used. AVR's
+floating-point trig routines (`cos`/`sin`) are extremely expensive
+(~1.3KB for two call sites) — avoid them if an animation can be done with
+linear interpolation or an instant cut instead.
