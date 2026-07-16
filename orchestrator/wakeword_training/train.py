@@ -1,14 +1,13 @@
 """
-One-off local training script for a custom "pixie" openWakeWord model.
+Local training script for the base "pixie" openWakeWord model.
 
-Hobby-grade, not commercial-grade: uses a modest synthetic positive set
-(Pocket TTS across its built-in voices) instead of thousands of examples,
-and reuses davidscripka's pre-computed curated negative-feature set
-(~11 hours, 185MB) instead of the full 17GB/2000-hour one. Expect a higher
-false-accept rate than a polished production model -- upgrade path later is
-a "custom verifier" trained on a few real recordings of Akshat saying
-"pixie", per openWakeWord's own docs, if this turns out too false-accept-y
-in practice.
+Hobby-grade, not commercial-grade: uses a modest positive set (synthetic
+Pocket TTS clips plus real recordings from record_positives.py) instead of
+thousands of examples, and reuses davidscripka's pre-computed curated
+negative-feature set (~11 hours, 185MB) instead of the full 17GB/2000-hour
+one. This base model alone still false-accepts on background talking/TV
+near the mic -- see train_verifier.py for the secondary filter that
+actually handles that.
 """
 
 import collections
@@ -22,6 +21,7 @@ from torch import nn
 from pocket_tts import TTSModel
 
 OUT_DIR = Path(__file__).parent
+REAL_POSITIVES_DIR = OUT_DIR / "real_positives"  # from record_positives.py
 NEGATIVE_FEATURES_URL = "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/validation_set_features.npy"
 NEGATIVE_FEATURES_PATH = OUT_DIR / "negative_features.npy"
 CATALOG_VOICES = [
@@ -55,6 +55,16 @@ def generate_positive_clips():
             audio = tts.generate_audio(vs, phrase).numpy()
             clips.append((audio, tts.sample_rate))
     print(f"Generated {len(clips)} positive clips from {len(CATALOG_VOICES)} voices.")
+    return clips
+
+
+def load_real_positive_clips():
+    if not REAL_POSITIVES_DIR.exists():
+        return []
+    import soundfile as sf
+    paths = sorted(REAL_POSITIVES_DIR.glob("*.wav"))
+    clips = [sf.read(p, dtype="float32") for p in paths]
+    print(f"Loaded {len(clips)} real recorded 'pixie' clips from {REAL_POSITIVES_DIR}.")
     return clips
 
 
@@ -102,7 +112,7 @@ def main():
         negative_features = negative_features[:n_windows * 16].reshape(n_windows, 16, 96)
         print(f"Reshaped into {negative_features.shape} windows")
 
-    clips = generate_positive_clips()
+    clips = generate_positive_clips() + load_real_positive_clips()
     positive_audio = clips_to_windows(clips)
 
     print("Computing audio embeddings for positive clips (streamed, matching runtime exactly)...")
